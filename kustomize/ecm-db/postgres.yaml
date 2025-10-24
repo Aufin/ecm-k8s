@@ -1,0 +1,36 @@
+apiVersion: postgres-operator.crunchydata.com/v1beta1
+kind: PostgresCluster
+metadata:
+  name: ecm-db
+  annotations:
+    postgres-operator.crunchydata.com/autoCreateUserSchema: "true"
+spec:
+  postgresVersion: 16
+  image: docker.io/aufin/postgresql:16-ecm-crunchy
+  users:
+    - name: postgres
+  authentication:
+    rules:
+      - hba: "hostssl all all all trust"
+      - hba: "host all all all trust"
+  instances:
+    - name: instance1
+      dataVolumeClaimSpec:
+        storageClassName: ecm-hot
+        accessModes:
+        - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: 16Gi
+  backups:
+    pgbackrest:
+      repos:
+      - name: repo2
+        volume:
+          volumeClaimSpec:
+            storageClassName: ecm-cold
+            accessModes:
+            - "ReadWriteOnce"
+            resources:
+              requests:
+                storage: 16Gi

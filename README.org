@@ -1,0 +1,254 @@
+#+TITLE: ECM: Kubernetes Deployment
+
+
+The K8s microservices for ECM involve 2 main parts:
+
+ 1) The CloudnativePG Postgresql Cluster
+ 2) The WebApp Server Pods
+
+
+They are all here within a single =YAML= file for deployment and
+independant files for testing and tweaking.
+
+
+* Install/Deploy
+
+The "easy" way is to run the =./deploy.sh= script from the source
+archive and simply wait until all Pods are running.
+
+The manual steps: 
+
+   - First install the CloudNativePG
+
+   #+begin_src sh :shebang #!/bin/sh :tangle deploy.sh
+     kubectl apply --server-side -f \
+     https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.27/releases/cnpg-1.27.0.yaml
+   #+end_src
+
+   - Then wait until is has installed. This verifies it.
+   
+   #+begin_src sh :tangle deploy.sh
+     kubectl rollout status deployment \
+     		-n cnpg-system cnpg-controller-manager
+   #+end_src
+
+   - And when that has completed rollout the ecm cluster itself
+   
+   #+begin_src sh  :tangle deploy.sh
+     kubectl apply -f ecm-k8s.yaml 
+   #+end_src
+
+   
+** On Azure?
+
+This is where prod lives for a certain client and therefore where k8s is deployed.
+
+ 1) Install azure cli
+    #+begin_src sh
+      # Arch
+      
+    #+end_src
+
+
+* Storage Classes
+
+There are various different storage classes based on what ECM needs.
+
+- ecmm-hot :: This is mostly for the database =pgdata=.
+- ecm-shared :: There are shared storage between pods that's *warm* in
+  nature. Likely NFS in 
+- ecm-cold :: This is for the backups and archives
+
+** The Development/Testing local Classes
+
+#+begin_src yaml :tangle local-storage-classes.yaml
+  apiVersion: storage.k8s.io/v1
+  kind: StorageClass
+  metadata:
+    name: ecm-hot
+  provisioner: k8s.io/minikube-hostpath
+  reclaimPolicy: Delete
+  volumeBindingMode: Immediate
+  ---
+  apiVersion: storage.k8s.io/v1
+  kind: StorageClass
+  metadata:
+    name: ecm-shared
+  provisioner: k8s.io/minikube-hostpath
+  reclaimPolicy: Delete
+  volumeBindingMode: Immediate
+  ---
+  apiVersion: storage.k8s.io/v1
+  kind: StorageClass
+  metadata:
+    name: ecm-cold
+  provisioner: k8s.io/minikube-hostpath
+  reclaimPolicy: Delete
+  volumeBindingMode: Immediate
+#+end_src
+
+  
+* WebApp Pods/Services etc
+
+The docs mantua
+
+The tutotal[fn:1] really helped here.
+
+
+** Deployment AKA StatefulSet.
+
+#+begin_src yaml :tangle ecm-app-deployment.yaml :noweb-ref deployment
+  apiVersion: apps/v1
+  kind: StatefulSet #Deployment
+  metadata:
+    creationTimestamp: "2025-10-08T22:37:47Z"
+    labels:
+      app: ecm-app
+    name: ecm-app
+  spec:
+    replicas: 2
+    selector:
+      matchLabels:
+        app: ecm-app
+    template:
+      metadata:
+        annotations:
+          io.kubernetes.cri-o.SandboxID/ecm-appd: 490e24292a4fc5b50c9d8a37d66941e80595d65da7badb260d5dc58f1423c00e
+        creationTimestamp: "2025-10-08T22:37:47Z"
+        labels:
+          app: ecm-app
+        name: ecm-app
+      spec:
+        containers:
+        - image: docker.io/aufin/ecm:latest
+          name: ecm-appd
+          ports:
+            - containerPort: 443
+          # resources:
+          #   requests:
+          #     memory: "4Gi"
+          #   limits:
+          #     memory: "8Gi"
+          args:
+            - /bin/sh
+            - -c
+            - 'echo started: "$!" `date` ; ecm-appd ; while true; do echo running `date`; sleep 60; done '
+#+end_src
+
+** Service
+
+We want the session to be sticky[fn:2] so the same user hits the same
+app. This is simply because the "stateless" state cache is stored per
+app instance as user authentication is a part of that.
+
+#+begin_src yaml :tangle ecm-app-service.yaml :noweb-ref service
+  apiVersion: v1
+  kind: Service
+  metadata:
+    labels:
+      app: ecm-app
+    name: ecm-app
+    namespace: default
+  spec:
+    ports:
+    - port: 443
+      protocol: TCP
+      targetPort: 443
+    selector:
+      app: ecm-app
+    sessionAffinity: ClientIP
+    type: ClusterIP
+#+end_src
+
+
+* Database Cluster
+
+Having a Master/Slave setup with auto-failover is important as hanging
+connections + transactions opens the DB server to OOM crashes where
+the WAL has the correct data.
+
+** Image and Catalog
+
+Because we still use the =PLSH= extension we need to create our own pg
+image and use that.
+
+   : image: aufin/postgresql:16-ecm-cloudnative
+
+#+begin_src yaml :noweb-ref catalog :tangle ecm-db-image-catalog.yaml 
+apiVersion: postgresql.cnpg.io/v1
+kind: ClusterImageCatalog
+metadata:
+  name: ecm-postgresql
+spec:
+  images:
+    - major: 16
+      image: docker.io/aufin/postgresql:16-ecm-cloudnative
+#+end_src
+
+** The Cluster-within-Cluster conf
+
+#+begin_src yaml :tangle ecm-db-cluster.yaml :noweb-ref db-cluster
+  apiVersion: postgresql.cnpg.io/v1
+  kind: Cluster
+  metadata:
+    name: ecm-cluster
+  spec:
+    instances: 2
+    imageCatalogRef:
+      apiGroup: postgresql.cnpg.io
+      kind: ClusterImageCatalog
+      name: ecm-postgresql
+      major: 16
+
+    storage:
+      size: 8Gi
+    postgresql:
+      parameters:
+        timezone: "America/Vancouver"
+      pg_hba:
+        - hostssl all all all trust
+        - host all all all trust
+#+end_src
+
+
+* The Unified =YAML=
+
+#+begin_quote
+To combine multiple YAML files into a single file for Kubernetes, you
+can use a multi-document YAML format. This allows you to define
+multiple resources in one file, separated by three hyphens (---).
+#+end_quote
+
+#+begin_src yaml :noweb yes :tangle ecm-k8s.yaml
+  <<catalog>>
+  ---
+  <<db-cluster>>
+  ---
+  <<deployment>>
+  ---
+  <<service>>
+#+end_src
+
+* Notes, HACKING, and misc
+
+Image pull failed and used all my quota! 
+
+https://codemia.io/knowledge-hub/path/how_to_retry_image_pull_in_a_kubernetes_pods
+
+StateFul Set.
+
+https://kubernetes.io/docs/tutorials/stateful-application/basic-stateful-set/
+
+#+begin_src sh
+$ kubectl get pods -l app=ecm-app
+NAME        READY   STATUS    RESTARTS   AGE
+ecm-app-0   1/1     Running   1          3h33m
+ecm-app-1   1/1     Running   1          3h33m
+#+end_src
+
+
+* Footnotes
+
+[fn:1] https://kubernetes.io/docs/tutorials/services/connect-applications-service/
+
+[fn:2] https://www.baeldung.com/ops/kubernetes-cluster-sticky-session

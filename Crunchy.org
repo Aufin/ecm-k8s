@@ -1,0 +1,327 @@
+#+TITLE: Crunchy Postgres for Kubernetes
+
+We need to be able to mount other file systems within the postgresql
+cluster. CloundNativePG does not allow such things.
+
+
+
+* The first =postgres.yaml= file
+
+[[file:kustomize/ecm-db/postgres.yaml][here]]
+
+#+begin_src sh
+  kubectl apply -k kustomize/install/namespace
+  kubectl apply --server-side -k kustomize/install/default/
+  kubectl apply -f local-storage-classes.yaml
+  kubectl apply -k kustomize/ecm-db/
+#+end_src
+
+#+begin_src sh
+  export PG_CLUSTER_NAME=ecm-db
+  export PG_CLUSTER_PRIMARY_POD=$(kubectl get pod -n postgres-operator -o name -l postgres-operator.crunchydata.com/cluster=$PG_CLUSTER_NAME,postgres-operator.crunchydata.com/role=master)
+  export PGUSER=postgres
+  unset PGDATABASE
+  export PGPASSWORD=$(kubectl get secrets -n postgres-operator $PG_CLUSTER_NAME-pguser-postgres -o go-template='{{.data.password | base64decode}}')
+#+end_src
+
+Forward and see.
+
+#+begin_src sh
+  kubectl -n postgres-operator port-forward "${PG_CLUSTER_PRIMARY_POD}" 5433:5432 &
+  # port forwarding takes a bit
+  sleep 2;
+  psql -h localhost -p 5433
+  
+  psql -h localhost -p 5433 --echo-all -f ~/db-dump-2025-10-10.sql
+#+end_src
+
+
+* The "Tablespace" to share a folder
+
+"A Tablespace is a Postgres feature that is used to store data on a
+different volume than the primary data directory.
+
+Some examples of use cases for tablespaces include:
+
+    Putting data onto archival systems " -- [[https://access.crunchydata.com/documentation/postgres-operator/latest/guides/tablespaces][docs]]
+
+
+We want a folder that can be used to communicate between all pods. The
+easy way to do that is mounting, but not using, a tablespace.
+
+
+PGO_FEATURE_GATES="TablespaceVolumes=true"
+
+* HACKING
+
+disk use
+
+7.2G    /var/lib/docker/volumes/minikube/_data/hostpath-provisioner/postgres-operator/second-ecm-test-instance1-rxfp-pgdata/
+3.4G    /var/lib/docker/volumes/minikube/_data/hostpath-provisioner/postgres-operator/second-ecm-test-repo2/
+
+* Custom image
+
+
+* Getting Started
+
+First we need the examples.
+
+#+begin_src sh
+  git remote add -f postgres-operator-examples git@github.com:CrunchyData/postgres-operator-examples.git
+  git subtree add --prefix=postgres-operator/ --squash postgres-operator-examples main
+#+end_src
+
+#+begin_quote
+By default, Crunchy Postgres for Kubernetes deploys with debug logging
+turned on. If you wish to disable this, you need to set the
+CRUNCHY_DEBUG environmental variable to "false" that is found in the
+kustomize/install/manager/manager.yaml file. Alternatively, you can
+add the following to your kustomize/install/manager/kustomization.yaml
+to disable debug logging:
+
+patchesStrategicMerge:
+- |-
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: pgo
+  spec:
+    template:
+      spec:
+        containers:
+        - name: operator
+          env:
+          - name: CRUNCHY_DEBUG
+            value: "false"
+
+You can also create additional Kustomize overlays to further patch and customize the installation according to your specific needs.
+
+#+end_quote
+
+Now install the namespace and operator.
+
+#+begin_src sh
+  cd postgres-operator/
+  sudo kubectl apply -k kustomize/install/namespace
+  kubectl apply --server-side -k kustomize/install/default
+#+end_src
+
+If it's working the following will tell you.
+
+#+begin_src sh
+$ sudo kubectl -n postgres-operator get pods --selector=postgres-operator.crunchydata.com/control-plane=postgres-operator --field-selector=status.phase=Running
+NAME                   READY   STATUS    RESTARTS   AGE
+pgo-6dc775b4df-hb788   1/1     Running   0          6m25s
+#+end_src
+
+** Create a Postgres Cluster
+
+Using the example in the kustomize/postgres directory, all we have to
+do is run:
+
+#+begin_src sh
+  sudo kubectl apply -k kustomize/postgres
+  # => postgrescluster.postgres-operator.crunchydata.com/hippo created
+#+end_src
+
+And the view the status 
+#+begin_src sh
+sudo kubectl -n postgres-operator describe postgresclusters.postgres-operator.crunchydata.com hippo
+sudo kubectl -n postgres-operator get pods --selector=postgres-operator.crunchydata.com/cluster=hippo,postgres-operator.crunchydata.com/instance
+#+end_src
+
+** Connect to a Postgres Cluster
+
+Connect Using a Port-Forward
+
+In a new terminal, create a port forward. If you are using Bash, you
+can run the following commands:
+
+#+begin_src sh
+  alias kubectl="sudo kubectl"
+  PG_CLUSTER_PRIMARY_POD=$(kubectl get pod -n postgres-operator -o name -l postgres-operator.crunchydata.com/cluster=hippo,postgres-operator.crunchydata.com/role=master)
+  kubectl -n postgres-operator port-forward "${PG_CLUSTER_PRIMARY_POD}" 5433:5432
+#+end_src
+
+#+begin_src sh
+  PG_CLUSTER_USER_SECRET_NAME=hippo-pguser-hippo
+
+  export PGPASSWORD=$(kubectl get secrets -n postgres-operator "${PG_CLUSTER_USER_SECRET_NAME}" -o go-template='{{.data.password | base64decode}}')
+
+  export PGUSER=$(kubectl get secrets -n postgres-operator "${PG_CLUSTER_USER_SECRET_NAME}" -o go-template='{{.data.user | base64decode}}') 
+  export PGDATABASE=$(kubectl get secrets -n postgres-operator "${PG_CLUSTER_USER_SECRET_NAME}" -o go-template='{{.data.dbname | base64decode}}') 
+  psql -h localhost -p 5433
+#+end_src
+
+** Re-create with no users and no database
+
+#+begin_src sh
+  cp -av kustomize/postgres/ kustomize/first-ecm-test
+#+end_src
+
+Let's spec more like our needs.
+
+#+begin_src sh :results verbatim :wrap src diff
+        cd postgres-operator
+        diff kustomize/postgres/postgres.yaml kustomize/first-ecm-test/postgres.yaml
+#+end_src
+
+#+begin_src diff
+4c4
+<   name: hippo
+---
+>   name: first-ecm-test
+8c8
+<   postgresVersion: 17
+---
+>   postgresVersion: 16
+10,12c10
+<     - name: hippo
+<       databases:
+<         - zoo
+---
+>     - name: postgres
+20c18
+<             storage: 1Gi
+---
+>             storage: 4Gi
+31c29
+<                 storage: 1Gi
+---
+>                 storage: 4Gi
+#+end_src
+
+And give it a go!
+
+#+begin_src sh
+  kubectl apply -k kustomize/first-ecm-test
+#+end_src
+
+status?
+
+#+begin_src sh
+kubectl -n postgres-operator describe postgresclusters.postgres-operator.crunchydata.com first-ecm-test
+kubectl -n postgres-operator get pods --selector=postgres-operator.crunchydata.com/cluster=first-ecm-test,postgres-operator.crunchydata.com/instance
+#+end_src
+
+Looks good. Does it work?
+
+#+begin_src sh
+  export PG_CLUSTER_PRIMARY_POD=$(kubectl get pod -n postgres-operator -o name -l postgres-operator.crunchydata.com/cluster=first-ecm-test,postgres-operator.crunchydata.com/role=master)
+  export PGUSER=postgres
+  unset PGDATABASE
+  export PGPASSWORD=$(kubectl get secrets -n postgres-operator first-ecm-test-pguser-postgres -o go-template='{{.data.password | base64decode}}')
+#+end_src
+
+Forward and see.
+
+#+begin_src sh
+  kubectl -n postgres-operator port-forward "${PG_CLUSTER_PRIMARY_POD}" 5433:5432 &
+  psql -h localhost -p 5433
+#+end_src
+
+*** Try the ECM dump!
+
+#+begin_src sh
+  psql -h localhost -p 5433 --echo-all -f ~/db-dump-2025-10-10.sql
+#+end_src
+
+That fails after the first bit with:
+
+#+begin_quote
+psql:/home/ecm/db-dump-2025-10-10.sql:3391: error: \connect: connection to server at "localhost" (::1), port 5433 failed: FATAL:  password authentication failed for user "postgres"
+connection to server at "localhost" (::1), port 5433 failed: FATAL:  no pg_hba.conf entry for host "127.0.0.1", user "postgres", database "template1", no encryption
+#+end_quote
+
+That actually does make sense as the dump also redoes that user's
+password.
+
+But I already looked into authentication so we go from there.
+
+** Allow all for the Auth so the dump takes
+
+Delete the last few tries.
+
+#+begin_src sh
+  kubectl delete -k kustomize/postgres/
+  kubectl delete -k kustomize/first-ecm-test
+#+end_src
+
+Copy to a new one.
+
+#+begin_src sh
+  cp -av kustomize/first-ecm-test/ kustomize/second-ecm-test
+#+end_src
+
+Edit it for the new HBA.
+
+#+begin_src sh :results verbatim :wrap src diff
+        cd postgres-operator
+        diff  kustomize/first-ecm-test/postgres.yaml kustomize/second-ecm-test/postgres.yaml
+#+end_src
+
+#+begin_src diff
+4c4
+<   name: first-ecm-test
+---
+>   name: second-ecm-test
+10a11,14
+>   authentication:
+>     rules:
+>       - hba: "hostssl all all all trust"
+>       - hba: "host all all all trust"
+29c33
+<                 storage: 4Gi
+---
+>                 storage: 1Gi
+#+end_src
+
+The storage is because I'm running out of space on the minikube.
+
+#+begin_src sh
+  kubectl apply -k kustomize/second-ecm-test
+#+end_src
+
+#+begin_src sh
+  export PG_CLUSTER_NAME=second-ecm-test
+  export PG_CLUSTER_PRIMARY_POD=$(kubectl get pod -n postgres-operator -o name -l postgres-operator.crunchydata.com/cluster=$PG_CLUSTER_NAME,postgres-operator.crunchydata.com/role=master)
+  export PGUSER=postgres
+  unset PGDATABASE
+  export PGPASSWORD=$(kubectl get secrets -n postgres-operator $PG_CLUSTER_NAME-pguser-postgres -o go-template='{{.data.password | base64decode}}')
+#+end_src
+
+Forward and see.
+
+#+begin_src sh
+  kubectl -n postgres-operator port-forward "${PG_CLUSTER_PRIMARY_POD}" 5433:5432 &
+  # port forwarding takes a bit
+  sleep 2;
+  psql -h localhost -p 5433
+#+end_src
+
+*** Try the ECM dump!
+
+#+begin_src sh
+  psql -h localhost -p 5433 --echo-all -f ~/db-dump-2025-10-10.sql
+#+end_src
+
+It actually worked. Nice!
+
+** Copy to repo root
+
+#+begin_src sh
+  cp -av postgres-operator/kustomize/install ./kustomize/
+  cp -av postgres-operator/kustomize/second-ecm-test kustomize/ecm-db
+#+end_src
+
+** Conclusion
+
+Now that we have the start we are no longer getting started.
+
+
+
+
+
+* Azure & Crunchy Bridge
+
+https://marketplace.microsoft.com/en-us/product/saas/crunchydatasolutionsinc1648056888353.bridge-prod?tab=Overview
