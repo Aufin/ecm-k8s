@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-ecm-global
+  namespace: ecm
+spec:
+  storageClassName: azureblob-fuse-premium
+  volumeName: pv-ecm-global
+  accessModes:
+  - 'ReadWriteMany'
+  resources:
+    requests:
+      storage: 1Ti
