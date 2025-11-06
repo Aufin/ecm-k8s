@@ -41,22 +41,378 @@ The manual steps:
    
 ** On Azure?
 
-This is where prod lives for a certain client and therefore where k8s is deployed.
+This is where prod lives for a certain client and therefore where k8s
+is deployed. On the small Jumpbox VM.
 
- 1) Install azure cli
+Tools pre-Installed on VM
+
+    - Azure Cli
+    - Kubectl
+    - Kubelogin
+
+      #+begin_src sh
+      ssh drew@4.229.177.49
+      #+end_src
+
+Once inside the VM, authenticate using your microsoft ID credential:
+
     #+begin_src sh
-      # Arch
-      
+      $ az login
+      To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code ET7K4J67K to authenticate.
+
+      Retrieving tenants and subscriptions for the selection...
+
+      [Tenant and subscription selection]
+
+      No     Subscription name    Subscription ID                       Tenant
+      -----  -------------------  ------------------------------------  ------------
+      [1]    MCA WebOps           cea0340a-3739-4fb9-9d2c-cdbcb5d6e7ec  WESTLANDCORP
+      [2] *  MCA WebOps Dev       463a54be-b5d5-437f-a521-90ccd737f8aa  WESTLANDCORP
+
+      The default is marked with an *; the default tenant is 'WESTLANDCORP' and subscription is 'MCA WebOps Dev' (463a54be-b5d5-437f-a521-90ccd737f8aa).
+
+      Select a subscription and tenant (Type a number or Enter for no changes): 2
+
+      Tenant: WESTLANDCORP
+      Subscription: MCA WebOps Dev (463a54be-b5d5-437f-a521-90ccd737f8aa)
+
+      [Announcements]
+      With the new Azure CLI login experience, you can select the subscription you want to use more easily. Learn more about it and its configuration at https://go.microsoft.com/fwlink/?linkid=2271236
+
+      If you encounter any problem, please open an issue at https://aka.ms/azclibug
+
+      [Warning] The login output has been updated. Please be aware that it no longer displays the full list of available subscriptions by default.
     #+end_src
 
 
+
+Set the cluster subscription:
+
+     #+begin_src sh
+       az account set --subscription 463a54be-b5d5-437f-a521-90ccd737f8aa
+    #+end_src
+
+
+
+Download cluster credentials
+
+     #+begin_src sh
+       az aks get-credentials --resource-group wig-maxwell-ecm-test-cac-rg-02 --name wig-maxwell-ecm-test-cac-arck-01 --overwrite-existing
+       az aks get-credentials --resource-group wig-maxwell-ecm-test-cac-rg-02 --name wig-maxwell-ecm-test-cac-arck-01 --overwrite-existing
+     #+end_src
+
+
+
+Use kubelogin plugin for authentication
+
+    #+begin_src sh
+    kubelogin convert-kubeconfig -l azurecli
+    #+end_src
+
+
+Verify Access:
+
+    Kubectl get nodes
+
+*** Storage Accounts
+
+
+
+#+begin_src sh
+  az aks update --enable-blob-driver --resource-group wig-maxwell-ecm-test-cac-rg-02 --name wig-maxwell-ecm-test-cac-arck-01 
+#+end_src
+
+* Namespace
+
+#+begin_src yaml :tangle ecm-namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ecm
+#+end_src
+
+* NFS
+
+There's an NFS server that allows the pods to share a filesystem. That
+way most of the shared storage, and the source thereof, is platform
+independent.
+
+https://github.com/kubernetes-csi/csi-driver-nfs/blob/master/deploy/example/nfs-provisioner/README.md
+
+** Install the CSI driver
+
+Following [[https://github.com/kubernetes-csi/csi-driver-nfs/blob/master/deploy/example/nfs-provisioner/README.md][the instructions]].
+
+#+begin_src sh
+  git remote add -f csi-nfs https://github.com/kubernetes-csi/csi-driver-nfs.git
+  git subtree add --prefix csi-driver-nfs --squash csi-nfs master
+
+  cd csi-driver-nfs
+  sudo ./deploy/install-driver.sh v4.12.1 local
+#+end_src
+
+
+** The Backing Volume
+
+*** Local
+
+#+begin_src yaml :tangle local-persistent-volumes.yaml 
+  apiVersion: v1
+  kind: PersistentVolume
+  metadata:
+    annotations:
+      pv.kubernetes.io/provisioned-by: nfs.csi.k8s.io
+    name: pv-ecm-global
+    namespace: ecm
+  spec:
+    capacity:
+      storage: 2Ti
+    storageClassName: ""
+    accessModes:
+    - ReadWriteMany
+    persistentVolumeReclaimPolicy: Retain
+    mountOptions:
+    - nfsvers=4.1
+    csi:
+      driver: nfs.csi.k8s.io
+      # volumeHandle format: {nfs-server-address}#{sub-dir-name}#{share-name}
+      # make sure this value is unique for every share in the cluster
+      volumeHandle: host.minikube.internal/share##
+      volumeAttributes:
+        server: host.minikube.internal
+        share: /
+#+end_src
+
+*** The Azure Volume
+
+https://learn.microsoft.com/en-us/azure/aks/azure-csi-blob-storage-provision?tabs=mount-blobfuse%2Csecret
+
+https://docs.azure.cn/en-us/aks/azure-csi-blob-storage-provision?tabs=mount-blobfuse%2Csecret#dynamically-provision-a-volume
+
+#+begin_src sh
+  
+#+end_src
+
+** The =PersistentVolumeClaim=
+
+#+begin_src yaml :tangle ecm-global-pvc.yaml
+  apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: pvc-ecm-global
+    namespace: ecm
+  spec:
+    storageClassName: ""
+    volumeName: pv-ecm-global
+    accessModes:
+    - 'ReadWriteMany'
+    resources:
+      requests:
+        storage: 1Ti
+#+end_src
+
+** The Deployment
+
+#+begin_src yaml :noweb-ref nfs-deployment :tangle ecm-nfs-deployment.yaml
+  apiVersion: apps/v1
+  kind: StatefulSet
+  metadata:
+    name: nfs-server
+    namespace: ecm
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: nfs-server
+    template:
+      metadata:
+        labels:
+          app: nfs-server
+      spec:
+        containers:
+        - name: nfs-server
+          image: aufin/nfs-server:latest
+          # env:
+          # - name: NFS_EXPORT_DIR
+          #   value: "/mnt/global"
+          securityContext:
+            privileged: true
+          ports:
+          - containerPort: 2049
+          - containerPort: 111
+          - containerPort: 20048
+          volumeMounts:
+          - mountPath: /exports
+            name: pvc-ecm-global
+            readOnly: false
+
+        volumes:
+        - name: pvc-ecm-global
+          persistentVolumeClaim:
+            claimName: pvc-ecm-global
+#+end_src
+
+** The service
+
+#+begin_src yaml :tangle ecm-nfs-service.yaml
+  apiVersion: v1
+  kind: Service
+  metadata:
+    name: nfs-service
+    namespace: ecm
+  spec:
+    type: ClusterIP
+    ports:
+      - port: 2049
+        name: nfs
+        protocol: TCP
+        targetPort: 2049
+      - port: 111
+        name: portmapper
+        targetPort: 111
+        protocol: UDP
+      - port: 20048
+        name: mountd
+        targetPort: 20048
+    selector:
+      app: nfs-server
+
+#+end_src
+
+** The Storage Class
+
+#+begin_src yaml :tangle ecm-shared-class.yaml
+  apiVersion: storage.k8s.io/v1
+  kind: StorageClass
+  metadata:
+    name: ecm-shared
+  provisioner: nfs.csi.k8s.io
+  parameters:
+    server: nfs-service.ecm.svc.cluster.local
+    share: /
+    # csi.storage.k8s.io/provisioner-secret is only needed for providing mountOptions in DeleteVolume
+    # csi.storage.k8s.io/provisioner-secret-name: "mount-options"
+    # csi.storage.k8s.io/provisioner-secret-namespace: "default"
+  reclaimPolicy: Retain
+  volumeBindingMode: Immediate
+  allowVolumeExpansion: true
+  mountOptions:
+    - nfsvers=4.1
+#+end_src
+
+** The Shared Volume
+
+#+begin_src yaml :tangle ecm-shared-volume.yaml
+  ---
+  apiVersion: v1
+  kind: PersistentVolume
+  metadata:
+    annotations:
+      pv.kubernetes.io/provisioned-by: nfs.csi.k8s.io
+    name: pv-shared
+    namespace: ecm
+  spec:
+    capacity:
+      storage: 1Ti
+    accessModes:
+      - ReadWriteMany
+    persistentVolumeReclaimPolicy: Retain
+    storageClassName: ecm-shared
+    mountOptions:
+      - nfsvers=4.1
+    csi:
+      driver: nfs.csi.k8s.io
+      # volumeHandle format: {nfs-server-address}#{sub-dir-name}#{share-name}
+      # make sure this value is unique for every share in the cluster
+      volumeHandle: nfs-service.ecm.svc.cluster.local/share##
+      volumeAttributes:
+        server: nfs-service.ecm.svc.cluster.local
+        share: /
+#+end_src
+
+** The Shared Claim
+
+#+begin_src yaml :tangle ecm-shared-claim.yaml
+  apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: pvc-shared
+    namespace: ecm
+  spec:
+    accessModes:
+      - ReadWriteMany  # In this example, multiple Pods consume the same PVC.
+    resources:
+      requests:
+        storage: 1Ti
+    storageClassName: ecm-shared
+#+end_src
+
+*** The Test Set
+
+#+begin_src yaml :tangle test-nfs.yaml
+  apiVersion: apps/v1
+  kind: StatefulSet
+  metadata:
+    name: test-nfs
+    namespace: ecm
+  spec:
+    replicas: 2
+    selector:
+      matchLabels:
+        name: test-nfs
+    template:
+      metadata:
+        name: test-nfs
+        labels:
+          name: test-nfs
+      spec:
+        nodeSelector:
+          "kubernetes.io/os": linux
+        containers:
+          - name: test-nfs
+            image: alpine
+            command:
+              - "/bin/sh"
+              - "-c"
+              - set -euo pipefail; while true; do echo $(hostname) $(date) >> /mnt/nfs/outfile; sleep 1; done
+            volumeMounts:
+              - name: nfs
+                mountPath: "/mnt/nfs"
+                readOnly: false
+        volumes:
+          - name: nfs
+            persistentVolumeClaim:
+              claimName: pvc-shared
+
+#+end_src
+
+#+begin_src yaml :tangle test-nfs2.yaml
+  apiVersion: v1
+  kind: Pod
+  metadata:
+    name: al-example
+    namespace: ecm
+  spec:
+    containers:
+      - image: alpine
+        name: alpine
+    #     volumeMounts:
+    #       - mountPath: /share
+    #         name: pvc-test
+    #         readOnly: false
+    # volumes:
+    #   - name: pvc-test
+    #     persistentVolumeClaim:
+    #       claimName: pvc-test
+
+#+end_src
 * Storage Classes
 
 There are various different storage classes based on what ECM needs.
 
 - ecmm-hot :: This is mostly for the database =pgdata=.
 - ecm-shared :: There are shared storage between pods that's *warm* in
-  nature. Likely NFS in 
+  nature. Likely NFS involed. 
 - ecm-cold :: This is for the backups and archives
 
 ** The Development/Testing local Classes
@@ -67,15 +423,7 @@ There are various different storage classes based on what ECM needs.
   metadata:
     name: ecm-hot
   provisioner: k8s.io/minikube-hostpath
-  reclaimPolicy: Delete
-  volumeBindingMode: Immediate
-  ---
-  apiVersion: storage.k8s.io/v1
-  kind: StorageClass
-  metadata:
-    name: ecm-shared
-  provisioner: k8s.io/minikube-hostpath
-  reclaimPolicy: Delete
+  reclaimPolicy: Retain
   volumeBindingMode: Immediate
   ---
   apiVersion: storage.k8s.io/v1
@@ -83,11 +431,49 @@ There are various different storage classes based on what ECM needs.
   metadata:
     name: ecm-cold
   provisioner: k8s.io/minikube-hostpath
-  reclaimPolicy: Delete
+  reclaimPolicy: Retain
   volumeBindingMode: Immediate
 #+end_src
 
-  
+* Persistent Volumes
+
+
+https://kubernetes.io/docs/tasks/configure-pod-container/configure-persistent-volume-storage/
+
+
+#+begin_src yaml :tangle ecm-pvcs.yaml
+  apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: pvc-ecm-shared-with-db
+    namespace: postgres-operator
+  spec:
+    storageClassName: ecm-shared 
+    volumeName: pv-ecm-shared-with-db
+    accessModes:
+    - 'ReadWriteMany'
+    resources:
+      requests:
+        storage: 1Gi
+#+end_src
+
+
+#+begin_src yaml :tangle test-pvc.yaml
+  apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: pvc-shared-ecm-db
+    # namespace: postgres-operator
+  spec:
+    storageClassName: ecm-shared
+    volumeName: pvc-8a72dc10-912f-4051-bc8c-ad9d3ac6105d
+    accessModes:
+    - 'ReadWriteMany'
+    resources:
+      requests:
+        storage: 1Gi
+#+end_src
+
 * WebApp Pods/Services etc
 
 The docs mantua
@@ -124,16 +510,19 @@ The tutotal[fn:1] really helped here.
           name: ecm-appd
           ports:
             - containerPort: 443
-          # resources:
-          #   requests:
-          #     memory: "4Gi"
-          #   limits:
-          #     memory: "8Gi"
+          volumeMounts:
+          - name: shared
+            mountPath: "/mnt/shared"
+            readOnly: false
           args:
             - /bin/sh
             - -c
             - 'echo started: "$!" `date` ; ecm-appd ; while true; do echo running `date`; sleep 60; done '
-#+end_src
+        volumes:
+          - name: shared
+            persistentVolumeClaim:
+              claimName: pvc-shared
+          #+end_src
 
 ** Service
 
@@ -148,7 +537,7 @@ app instance as user authentication is a part of that.
     labels:
       app: ecm-app
     name: ecm-app
-    namespace: default
+    namespace: ecm
   spec:
     ports:
     - port: 443
@@ -210,6 +599,19 @@ spec:
         - host all all all trust
 #+end_src
 
+* The Jump pod
+
+#+begin_src yaml :tangle jump-pod.yaml
+  apiVersion: v1
+  kind: Pod
+  metadata:
+    name: jump
+    namespace: ecm
+  spec:
+    containers:
+      - image: alpine
+        name: alpine
+#+end_src
 
 * The Unified =YAML=
 
@@ -228,6 +630,234 @@ multiple resources in one file, separated by three hyphens (---).
   ---
   <<service>>
 #+end_src
+
+
+* Development Meta
+
+
+** Deployment AKA StatefulSet.
+
+#+begin_src yaml :tangle ecm-app-dev.yaml :noweb-ref deployment
+  apiVersion: apps/v1
+  kind: StatefulSet #Deployment
+  metadata:
+    creationTimestamp: "2025-10-08T22:37:47Z"
+    labels:
+      app: ecm-app-dev
+    name: ecm-app-dev
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: ecm-app-dev
+    template:
+      metadata:
+        labels:
+          app: ecm-app-dev
+        name: ecm-app-dev
+      spec:
+        containers:
+        - image: docker.io/aufin/ecm:latest
+          name: ecm-appd
+          ports:
+            - containerPort: 443
+            - containerPort: 4005
+          volumeMounts:
+          - name: devapp
+            mountPath: "/srv/ecm/app"
+            readOnly: false
+          - name: devlisp
+            mountPath: "/srv/ecm/lisp"
+            readOnly: false
+   
+          args:
+            - /bin/sh
+            - -c
+            - 'echo started: "$!" `date` ; ecm-appd ; while true; do echo running `date`; sleep 60; done '
+        volumes:
+          - name: devapp
+            persistentVolumeClaim:
+              claimName: pvc-ecm-app-shared
+          - name: devlisp
+            persistentVolumeClaim:
+              claimName: pvc-ecm-lisp-shared
+          #+end_src
+
+** Development Service
+
+
+#+begin_src yaml :tangle ecm-app-dev-service.yaml
+  apiVersion: v1
+  kind: Service
+  metadata:
+    labels:
+      app: ecm-app-dev
+    name: ecm-app-dev
+    namespace: ecm
+  spec:
+    ports:
+    - port: 443
+      name: https
+      protocol: TCP
+      targetPort: 443
+    - port: 4005
+      name: slime
+      protocol: TCP
+      targetPort: 4005
+    selector:
+      app: ecm-app-dev
+    sessionAffinity: ClientIP
+    type: ClusterIP
+#+end_src
+
+	  
+** The Shared =ecm-app= and =ecm-lisp= Volumes
+
+#+begin_src yaml :tangle ecm-dev-shared-volume.yaml
+  apiVersion: v1
+  kind: PersistentVolume
+  metadata:
+    annotations:
+      pv.kubernetes.io/provisioned-by: nfs.csi.k8s.io
+    name: pv-ecm-app-shared
+    namespace: ecm
+  spec:
+    capacity:
+      storage: 1Ti
+    accessModes:
+      - ReadWriteMany
+    persistentVolumeReclaimPolicy: Retain
+    storageClassName: ecm-shared
+    mountOptions:
+      - nfsvers=4.1
+    csi:
+      driver: nfs.csi.k8s.io
+      # volumeHandle format: {nfs-server-address}#{sub-dir-name}#{share-name}
+      # make sure this value is unique for every share in the cluster
+      volumeHandle: nfs-service.ecm.svc.cluster.local/ecm-app##
+      volumeAttributes:
+        server: nfs-service.ecm.svc.cluster.local
+        share: /ecm-app
+  ---
+  apiVersion: v1
+  kind: PersistentVolume
+  metadata:
+    annotations:
+      pv.kubernetes.io/provisioned-by: nfs.csi.k8s.io
+    name: pv-ecm-lisp-shared
+    namespace: ecm
+  spec:
+    capacity:
+      storage: 1Ti
+    accessModes:
+      - ReadWriteMany
+    persistentVolumeReclaimPolicy: Retain
+    storageClassName: ecm-shared
+    mountOptions:
+      - nfsvers=4.1
+    csi:
+      driver: nfs.csi.k8s.io
+      # volumeHandle format: {nfs-server-address}#{sub-dir-name}#{share-name}
+      # make sure this value is unique for every share in the cluster
+      volumeHandle: nfs-service.ecm.svc.cluster.local#ecm-lisp#pv-ecm-lisp-shared
+      volumeAttributes:
+        server: nfs-service.ecm.svc.cluster.local
+        share: /ecm-lisp
+#+end_src
+
+
+** The Shared Claims
+
+#+begin_src yaml :tangle ecm-dev-shared-claim.yaml
+  apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: pvc-ecm-app-shared
+    namespace: ecm
+  spec:
+    accessModes:
+      - ReadWriteMany  # In this example, multiple Pods consume the same PVC.
+    resources:
+      requests:
+        storage: 1Ti
+    storageClassName: ecm-shared
+    volumeName: pv-ecm-app-shared
+  ---
+  apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: pvc-ecm-lisp-shared
+    namespace: ecm
+  spec:
+    accessModes:
+      - ReadWriteMany  # In this example, multiple Pods consume the same PVC.
+    resources:
+      requests:
+        storage: 1Ti
+    storageClassName: ecm-shared
+    volumeName: pv-ecm-lisp-shared
+#+end_src
+
+*** The Test Set
+
+#+begin_src yaml :tangle test-nfs.yaml
+  apiVersion: apps/v1
+  kind: StatefulSet
+  metadata:
+    name: test-nfs
+    namespace: ecm
+  spec:
+    replicas: 2
+    selector:
+      matchLabels:
+        name: test-nfs
+    template:
+      metadata:
+        name: test-nfs
+        labels:
+          name: test-nfs
+      spec:
+        nodeSelector:
+          "kubernetes.io/os": linux
+        containers:
+          - name: test-nfs
+            image: alpine
+            command:
+              - "/bin/sh"
+              - "-c"
+              - set -euo pipefail; while true; do echo $(hostname) $(date) >> /mnt/nfs/outfile; sleep 1; done
+            volumeMounts:
+              - name: nfs
+                mountPath: "/mnt/nfs"
+                readOnly: false
+        volumes:
+          - name: nfs
+            persistentVolumeClaim:
+              claimName: pvc-shared
+
+#+end_src
+
+#+begin_src yaml :tangle test-nfs2.yaml
+  apiVersion: v1
+  kind: Pod
+  metadata:
+    name: al-example
+    namespace: ecm
+  spec:
+    containers:
+      - image: alpine
+        name: alpine
+    #     volumeMounts:
+    #       - mountPath: /share
+    #         name: pvc-test
+    #         readOnly: false
+    # volumes:
+    #   - name: pvc-test
+    #     persistentVolumeClaim:
+    #       claimName: pvc-test
+
+#+end_src
+
 
 * Notes, HACKING, and misc
 

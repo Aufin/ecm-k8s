@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: StatefulSet #Deployment
+metadata:
+  creationTimestamp: "2025-10-08T22:37:47Z"
+  labels:
+    app: ecm-app
+  name: ecm-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ecm-app
+  template:
+    metadata:
+      annotations:
+        io.kubernetes.cri-o.SandboxID/ecm-appd: 490e24292a4fc5b50c9d8a37d66941e80595d65da7badb260d5dc58f1423c00e
+      creationTimestamp: "2025-10-08T22:37:47Z"
+      labels:
+        app: ecm-app
+      name: ecm-app
+    spec:
+      containers:
+      - image: docker.io/aufin/ecm:latest
+        name: ecm-appd
+        ports:
+          - containerPort: 443
+        volumeMounts:
+        - name: shared
+          mountPath: "/mnt/shared"
+          readOnly: false
+        args:
+          - /bin/sh
+          - -c
+          - 'echo started: "$!" `date` ; ecm-appd ; while true; do echo running `date`; sleep 60; done '
+      volumes:
+        - name: shared
+          persistentVolumeClaim:
+            claimName: pvc-shared

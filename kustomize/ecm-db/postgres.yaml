@@ -21,14 +21,60 @@ spec:
         - "ReadWriteOnce"
         resources:
           requests:
-            storage: 16Gi
+            storage: 10Gi
+      tablespaceVolumes:
+        - name: shared
+          dataVolumeClaimSpec:
+            # selector:
+            #   matchLabels:
+            #     share-with-db: pv
+            #dataSource:
+            #  kind: PersistentVolumeClaim
+            #  name: pvc-ecm-shared-with-db
+            storageClassName: ecm-shared
+            volumeName: pv-ecm-shared-with-db-1
+            accessModes:
+              - 'ReadWriteMany'
+            resources:
+              requests:
+                storage: 1Ti
+        # - name: shared
+        #   dataVolumeClaimSpec:
+        #     storageClassName: ecm-shared
+        #     accessModes:
+        #       - 'ReadWriteMany'
+        #     resources:
+        #       requests:
+        #         storage: 1Gi
+        #     volumeName: ecm-shared-with-db-pv
+    - name: instance2
+      dataVolumeClaimSpec:
+        storageClassName: ecm-hot
+        accessModes:
+        - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: 10Gi
+      tablespaceVolumes:
+        - name: shared
+          dataVolumeClaimSpec:
+            storageClassName: ecm-shared
+            volumeName: pv-ecm-shared-with-db-2
+            accessModes:
+              - 'ReadWriteMany'
+            resources:
+              requests:
+                storage: 1Ti
+   
+
   backups:
     pgbackrest:
       repos:
       - name: repo2
         volume:
           volumeClaimSpec:
-            storageClassName: ecm-cold
+            storageClassName: ecm-shared
+            volumeName: pv-db-backrest
             accessModes:
             - "ReadWriteOnce"
             resources:

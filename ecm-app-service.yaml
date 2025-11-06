@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: ecm-app
+  name: ecm-app
+  namespace: ecm
+spec:
+  ports:
+  - port: 443
+    protocol: TCP
+    targetPort: 443
+  selector:
+    app: ecm-app
+  sessionAffinity: ClientIP
+  type: ClusterIP

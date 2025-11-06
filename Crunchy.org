@@ -9,11 +9,118 @@ cluster. CloundNativePG does not allow such things.
 
 [[file:kustomize/ecm-db/postgres.yaml][here]]
 
-#+begin_src sh
-  kubectl apply -k kustomize/install/namespace
-  kubectl apply --server-side -k kustomize/install/default/
-  kubectl apply -f local-storage-classes.yaml
-  kubectl apply -k kustomize/ecm-db/
+#+begin_src sh :tangle crunchy.sh
+  alias minikube='sudo minikube'
+  alias kubectl='sudo kubectl'
+
+  mrestart () {
+  	minikube delete
+  	# sudo and minikube make locks strange
+  	sudo sysctl fs.protected_regular=0
+  	rm -v /tmp/juju-mk*
+
+  	minikube start --disk-size=64g --force
+      minikube mount --uid 1001 --gid 1001 /srv/share-test:/share &
+   
+  }
+
+  k-setup () {
+  	csi-setup && \
+  		k-ecm-namespace && \
+  		k-ecm-storage && \
+  		apply-CPK
+  }
+
+  k-nfs-setup () {
+    k-ecm-nfs-service
+    echo Waiting for it to be ready ...
+    kubectl wait --for=condition=Ready pod/nfs-server-0 --timeout=60s
+    k-ecm-nfs-storage
+  }
+
+  k-db-setup () {
+   kubectl apply -f ecm-db-shared-volume.yaml
+   #echo waiting for pvc to be bound
+   #kubectl wait --for=jsonpath='{.status.phase}'=Bound pvc/pvc-ecm-shared-with-db
+   apply-ecm-db
+  }		
+
+  k-db-init () {
+   DUMP=${1:-db-dump-2025-10-10.sql}
+   export PG_CLUSTER_PRIMARY_POD=$(kubectl get pod -o name -l postgres-operator.crunchydata.com/cluster=ecm-db,postgres-operator.crunchydata.com/role=master)
+   kubectl exec $PG_CLUSTER_PRIMARY_POD -- psql --echo-all -f /tablespaces/shared/$DUMP
+  }
+
+  csi-setup () {
+       cd csi-driver-nfs
+       sudo ./deploy/install-driver.sh v4.12.1 local
+       cd -
+  }
+
+  nfs-pod () {
+    kubectl get pod -lapp=nfs-server -oname
+  }
+
+  k-ecm-namespace  () {
+  	kubectl apply -f ecm-namespace.yaml
+      kubectl config set-context --current --namespace=ecm
+      
+  }
+
+  k-ecm-storage () {
+  	kubectl apply -f local-persistent-volumes.yaml
+  	kubectl apply -f local-storage-classes.yaml
+      
+  }
+
+  k-ecm-nfs-service () {
+  	kubectl apply -f ecm-global-pvc.yaml
+      kubectl apply -n ecm -f ecm-nfs-deployment.yaml 
+      kubectl apply -n ecm -f ecm-nfs-service.yaml
+  }
+
+  k-ecm-nfs-storage () {
+  	kubectl apply -f ecm-shared-class.yaml
+  	kubectl apply -f ecm-shared-volume.yaml
+  	kubectl apply -f ecm-shared-claim.yaml
+  }
+
+
+
+  apply-CPK () {
+  	kubectl apply -k kustomize/install/namespace
+  	kubectl apply --server-side -k kustomize/install/default/
+  }
+
+  apply-ecm-db () {
+  	kubectl apply -k kustomize/ecm-db/
+  }
+
+  export-kenv () {
+      export PGO_POD=$(kubectl get -n postgres-operator -o name -l app.kubernetes.io/name=pgo pod)
+  	export PG_CLUSTER_INSTANCE_1=$(kubectl get pod -n postgres-operator -o name -l postgres-operator.crunchydata.com/cluster=ecm-db,postgres-operator.crunchydata.com/instance-set=instance1)
+  }
+
+
+
+
+  do-over () {
+  	mrestart
+  	kstorage
+  	apply-CPK
+      sleep 1
+  	export-kenv
+  	while [ -z $PGO_POD ]; do echo no pod? ; kubectl get -n postgres-operator pod; sleep 1; export-kenv ; done;
+  	kubectl wait --for=condition=Ready $PGO_POD --timeout=60s
+  	apply-ecm-db
+  	export-kenv
+  }
+
+
+  export SHARED_VOLUME_NAME=$(kubectl get -n postgres-operator -o=jsonpath='{.items[*].spec.volumeName}' -l postgres-operator.crunchydata.com/data=shared,postgres-operator.crunchydata.com/cluster=ecm-db,postgres-operator.crunchydata.com/role=tablespace pvc)
+
+  # kubectl label pv $SHARED_VOLUME_NAME shared-ecm-db=pv
+
 #+end_src
 
 #+begin_src sh
@@ -35,6 +142,136 @@ Forward and see.
   psql -h localhost -p 5433 --echo-all -f ~/db-dump-2025-10-10.sql
 #+end_src
 
+ 
+* The Shared Volumes
+
+#+begin_src yaml :tangle ecm-db-shared-volume.yaml
+  ---
+  apiVersion: v1
+  kind: PersistentVolume
+  metadata:
+    annotations:
+      pv.kubernetes.io/provisioned-by: nfs.csi.k8s.io
+    name: pv-ecm-shared-with-db-1
+    namespace: ecm
+  spec:
+    capacity:
+      storage: 1Ti
+    accessModes:
+      - ReadWriteMany
+    persistentVolumeReclaimPolicy: Retain
+    storageClassName: ecm-shared
+    mountOptions:
+      - nfsvers=4.1
+    csi:
+      driver: nfs.csi.k8s.io
+      # volumeHandle format: {nfs-server-address}#{sub-dir-name}#{share-name}
+      # make sure this value is unique for every share in the cluster
+      volumeHandle: nfs-service.ecm.svc.cluster.local/share##
+      volumeAttributes:
+        server: nfs-service.ecm.svc.cluster.local
+        share: /data
+  ---
+  apiVersion: v1
+  kind: PersistentVolume
+  metadata:
+    annotations:
+      pv.kubernetes.io/provisioned-by: nfs.csi.k8s.io
+    name: pv-ecm-shared-with-db-2
+    namespace: ecm
+  spec:
+    capacity:
+      storage: 1Ti
+    accessModes:
+      - ReadWriteMany
+    persistentVolumeReclaimPolicy: Retain
+    storageClassName: ecm-shared
+    mountOptions:
+      - nfsvers=4.1
+    csi:
+      driver: nfs.csi.k8s.io
+      # volumeHandle format: {nfs-server-address}#{sub-dir-name}#{share-name}
+      # make sure this value is unique for every share in the cluster
+      volumeHandle: nfs-service.ecm.svc.cluster.local/share2##
+      volumeAttributes:
+        server: nfs-service.ecm.svc.cluster.local
+        share: /data
+  ---
+  apiVersion: v1
+  kind: PersistentVolume
+  metadata:
+    annotations:
+      pv.kubernetes.io/provisioned-by: nfs.csi.k8s.io
+    name: pv-db-backrest
+    namespace: ecm
+  spec:
+    capacity:
+      storage: 1Ti
+    accessModes:
+      - ReadWriteOnce
+    persistentVolumeReclaimPolicy: Retain
+    storageClassName: ecm-shared
+    mountOptions:
+      - nfsvers=4.1
+    csi:
+      driver: nfs.csi.k8s.io
+      # volumeHandle format: {nfs-server-address}#{sub-dir-name}#{share-name}
+      # make sure this value is unique for every share in the cluster
+      volumeHandle: nfs-service.ecm.svc.cluster.local/share##
+      volumeAttributes:
+        server: nfs-service.ecm.svc.cluster.local
+        share: /pg-backrest
+#+end_src
+
+* Change the namespace
+
+To modify the name of namespace created by the installer, the
+=kustomize/install/namespace/namespace.yaml= should be modified:
+
+#+begin_src sh :results verbatim :wrap src diff
+  git diff kustomize/install/namespace/namespace.yaml
+#+end_src
+
+#+begin_src diff
+diff --git a/kustomize/install/namespace/namespace.yaml b/kustomize/install/namespace/namespace.yaml
+index bfebd8ac..d435fa1c 100644
+--- a/kustomize/install/namespace/namespace.yaml
++++ b/kustomize/install/namespace/namespace.yaml
+@@ -1,4 +1,4 @@
+ apiVersion: v1
+ kind: Namespace
+ metadata:
+-  name: postgres-operator
++  name: ecm
+#+end_src
+
+
+The namespace setting in =kustomize/install/default/kustomization.yaml= 
+should be modified accordingly.
+
+#+begin_src sh :results verbatim :wrap src diff
+  git diff kustomize/install/default/kustomization.yaml
+#+end_src
+
+#+RESULTS:
+#+begin_src diff
+diff --git a/kustomize/install/default/kustomization.yaml b/kustomize/install/default/kustomization.yaml
+index e7a0ea52..f6bb66ae 100644
+--- a/kustomize/install/default/kustomization.yaml
++++ b/kustomize/install/default/kustomization.yaml
+@@ -1,6 +1,6 @@
+ kind: Kustomization
+ 
+-namespace: postgres-operator
++namespace: ecm
+ 
+ labels:
+ - includeSelectors: false
+@@ -34,4 +34,4 @@ patches:
+           - name: operator
+             env:
+             - name: PGO_FEATURE_GATES
+#+end_src
 
 * The "Tablespace" to share a folder
 
@@ -49,8 +286,73 @@ Some examples of use cases for tablespaces include:
 We want a folder that can be used to communicate between all pods. The
 easy way to do that is mounting, but not using, a tablespace.
 
+We have a =StorageClass= named =ecm-shared=. We'll put the two
+together.
 
-PGO_FEATURE_GATES="TablespaceVolumes=true"
+** Add the Feature
+
+In the kustomize/install/default/kustomization.yaml file repository you will see a section like this:
+
+  #+begin_src yaml
+    env:
+    - name: PGO_FEATURE_GATES
+  #+end_src
+
+  
+We want this: =PGO_FEATURE_GATES="TablespaceVolumes=true"=
+
+#+begin_src sh :results verbatim :wrap src diff
+  git diff kustomize/install/default/kustomization.yaml
+#+end_src
+
+So there you go.
+
+#+begin_src diff
+diff --git a/kustomize/install/default/kustomization.yaml b/kustomize/install/default/kustomization.yaml
+index e7a0ea5..881aa74 100644
+--- a/kustomize/install/default/kustomization.yaml
++++ b/kustomize/install/default/kustomization.yaml
+@@ -34,4 +34,4 @@ patches:
+           - name: operator
+             env:
+             - name: PGO_FEATURE_GATES
+-              value: ""
++              value: "TablespaceVolumes=true"
+#+end_src
+
+
+#+begin_src sh
+  kubectl apply --server-side -k kustomize/install/default/
+#+end_src
+
+* Request the volume
+
+"Once you request those tablespaceVolumes, PGO takes care of creating
+(or reusing) those volumes, including mounting them to the pod at a
+known path (/tablespaces/NAME) and adding them to the necessary
+containers."
+
+
+    dataVolumeClaimSpec:
+      volumeName: pvc-1001c17d-c137-4f78-8505-be4b26136924 # A preexisting volume you want to reuse for PGDATA
+      accessModes:
+        - 'ReadWriteOnce'
+      resources:
+        requests:
+          storage: 1Gi
+    tablespaceVolumes:
+      storageClassName: ecm-shared
+      - name: user
+        dataVolumeClaimSpec:
+          storageClassName: ecm-shared
+          accessModes:
+            - 'ReadWriteOnce'
+          resources:
+            requests:
+              storage: 1Gi
+          volumeName: pvc-3fea1531-617a-4fff-9032-6487206ce644 # A preexisting volume you want to use for this tablespace
+
+#+RESULTS:
 
 * HACKING
 

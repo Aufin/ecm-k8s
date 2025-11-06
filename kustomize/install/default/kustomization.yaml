@@ -1,6 +1,6 @@
 kind: Kustomization
 
-namespace: postgres-operator
+namespace: ecm
 
 labels:
 - includeSelectors: false
@@ -34,4 +34,4 @@ patches:
           - name: operator
             env:
             - name: PGO_FEATURE_GATES
-              value: ""
+              value: "TablespaceVolumes=true"

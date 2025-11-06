@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nfs-server
+  namespace: ecm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nfs-server
+  template:
+    metadata:
+      labels:
+        app: nfs-server
+    spec:
+      containers:
+      - name: nfs-server
+        image: aufin/nfs-server:latest
+        # env:
+        # - name: NFS_EXPORT_DIR
+        #   value: "/mnt/global"
+        securityContext:
+          privileged: true
+        ports:
+        - containerPort: 2049
+        - containerPort: 111
+        - containerPort: 20048
+        volumeMounts:
+        - mountPath: /exports
+          name: pvc-ecm-global
+          readOnly: false
+
+      volumes:
+      - name: pvc-ecm-global
+        persistentVolumeClaim:
+          claimName: pvc-ecm-global

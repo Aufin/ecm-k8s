@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: StatefulSet #Deployment
+metadata:
+  creationTimestamp: "2025-10-08T22:37:47Z"
+  labels:
+    app: ecm-app-dev
+  name: ecm-app-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ecm-app-dev
+  template:
+    metadata:
+      labels:
+        app: ecm-app-dev
+      name: ecm-app-dev
+    spec:
+      containers:
+      - image: docker.io/aufin/ecm:latest
+        name: ecm-appd
+        ports:
+          - containerPort: 443
+          - containerPort: 4005
+        volumeMounts:
+        - name: devapp
+          mountPath: "/srv/ecm/app"
+          readOnly: false
+        - name: devlisp
+          mountPath: "/srv/ecm/lisp"
+          readOnly: false
+ 
+        args:
+          - /bin/sh
+          - -c
+          - 'echo started: "$!" `date` ; ecm-appd ; while true; do echo running `date`; sleep 60; done '
+      volumes:
+        - name: devapp
+          persistentVolumeClaim:
+            claimName: pvc-ecm-app-shared
+        - name: devlisp
+          persistentVolumeClaim:
+            claimName: pvc-ecm-lisp-shared

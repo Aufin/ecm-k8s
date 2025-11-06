@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: ecm-app-dev
+  name: ecm-app-dev
+  namespace: ecm
+spec:
+  ports:
+  - port: 443
+    name: https
+    protocol: TCP
+    targetPort: 443
+  - port: 4005
+    name: slime
+    protocol: TCP
+    targetPort: 4005
+  selector:
+    app: ecm-app-dev
+  sessionAffinity: ClientIP
+  type: ClusterIP
