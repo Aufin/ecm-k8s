@@ -3,7 +3,7 @@ kind: PersistentVolume
 metadata:
   annotations:
     pv.kubernetes.io/provisioned-by: blob.csi.azure.com
-  name: pv-ecm-blob
+  name: pv-ecm-global
 spec:
   capacity:
     storage: 2Ti
