@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: jump
+  namespace: ecm
+spec:
+  containers:
+    - image: alpine
+      name: alpine
+      args:
+        - /bin/sh
+        - -c
+        - 'echo started: "$!" `date` ; while true; do echo running `date`; sleep 60; done '
