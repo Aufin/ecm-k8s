@@ -25,12 +25,25 @@ spec:
         - containerPort: 2049
         - containerPort: 111
         - containerPort: 20048
-      #   volumeMounts:
-      #   - mountPath: /exports
-      #     name: pvc-ecm-global
-      #     readOnly: false
+         volumeMounts:
+         - mountPath: /exports
+           name: pvc-ecm-global
+           readOnly: false
 
-      # volumes:
-      # - name: pvc-ecm-global
-      #   persistentVolumeClaim:
-      #     claimName: pvc-ecm-global
+       volumes:
+       - name: pvc-ecm-global
+         persistentVolumeClaim:
+           claimName: pvc-test-nfs
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+    name: pvc-test-nfs
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: managed-csi
+  resources:
+    requests:
+      storage: 5Gi
