@@ -25,7 +25,7 @@ spec:
         - containerPort: 2049
         - containerPort: 111
         - containerPort: 20048
-         volumeMounts:
+        volumeMounts:
          - mountPath: /exports
            name: pvc-ecm-global
            readOnly: false
