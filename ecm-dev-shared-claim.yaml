@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-ecm-app-shared
+  namespace: ecm
+spec:
+  accessModes:
+    - ReadWriteMany  # In this example, multiple Pods consume the same PVC.
+  resources:
+    requests:
+      storage: 1Ti
+  storageClassName: ecm-shared
+  volumeName: pv-ecm-app-shared
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-ecm-lisp-shared
+  namespace: ecm
+spec:
+  accessModes:
+    - ReadWriteMany  # In this example, multiple Pods consume the same PVC.
+  resources:
+    requests:
+      storage: 1Ti
+  storageClassName: ecm-shared
+  volumeName: pv-ecm-lisp-shared

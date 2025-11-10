@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: test-nfs
+  namespace: ecm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      name: test-nfs
+  template:
+    metadata:
+      name: test-nfs
+      labels:
+        name: test-nfs
+    spec:
+      nodeSelector:
+        "kubernetes.io/os": linux
+      containers:
+        - name: test-nfs
+          image: alpine
+          command:
+            - "/bin/sh"
+            - "-c"
+            - set -euo pipefail; while true; do echo $(hostname) $(date) >> /mnt/nfs/outfile; sleep 1; done
+          volumeMounts:
+            - name: nfs
+              mountPath: "/mnt/nfs"
+              readOnly: false
+      volumes:
+        - name: nfs
+          persistentVolumeClaim:
+            claimName: pvc-shared
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: test-nfs
+  namespace: ecm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      name: test-nfs
+  template:
+    metadata:
+      name: test-nfs
+      labels:
+        name: test-nfs
+    spec:
+      nodeSelector:
+        "kubernetes.io/os": linux
+      containers:
+        - name: test-nfs
+          image: alpine
+          command:
+            - "/bin/sh"
+            - "-c"
+            - set -euo pipefail; while true; do echo $(hostname) $(date) >> /mnt/nfs/outfile; sleep 1; done
+          volumeMounts:
+            - name: nfs
+              mountPath: "/mnt/nfs"
+              readOnly: false
+      volumes:
+        - name: nfs
+          persistentVolumeClaim:
+            claimName: pvc-shared
