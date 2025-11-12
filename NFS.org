@@ -3,24 +3,24 @@
 * Test on Azure
 
 #+begin_src yaml :tangle jump-ubuntu.yaml
-    apiVersion: v1
-    kind: Pod
-    metadata:
-      name: ubuntu
-    spec:
-      containers:
-      - name: ubuntu
-        image: ubuntu
-        command: ["sleep", "infinity"]
-        volumeMounts:
-            - mountPath: /exports
-              name: pvc-ecm-global-2
-              readOnly: false
+  apiVersion: v1
+  kind: Pod
+  metadata:
+    name: ubuntu
+  spec:
+    containers:
+    - name: ubuntu
+      image: ubuntu
+      command: ["sleep", "infinity"]
+      volumeMounts:
+          - mountPath: /exports
+            name: pvc-ecm-global-2
+            readOnly: false
 
     volumes:
-      - name: pvc-ecm-global-2
-        persistentVolumeClaim:
-          claimName: pvc-ecm-global-2
+    - name: pvc-ecm-global-2
+      persistentVolumeClaim:
+        claimName: pvc-ecm-global-2
 
 #+end_src
 

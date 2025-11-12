@@ -12,7 +12,7 @@ spec:
           name: pvc-ecm-global-2
           readOnly: false
 
-volumes:
+  volumes:
   - name: pvc-ecm-global-2
     persistentVolumeClaim:
       claimName: pvc-ecm-global-2
