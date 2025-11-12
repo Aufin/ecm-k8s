@@ -7,3 +7,12 @@ spec:
   - name: ubuntu
     image: ubuntu
     command: ["sleep", "infinity"]
+    volumeMounts:
+        - mountPath: /exports
+          name: pvc-ecm-global-2
+          readOnly: false
+
+volumes:
+  - name: pvc-ecm-global-2
+    persistentVolumeClaim:
+      claimName: pvc-ecm-global-2
