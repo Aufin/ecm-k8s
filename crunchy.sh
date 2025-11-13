@@ -12,6 +12,10 @@ mrestart () {
  
 }
 
+k-run-testpod () {
+ kubectl run -it --rm testpod --image=alpine --restart=Never
+}
+
 k-setup () {
 	csi-setup && \
 		k-ecm-namespace && \
@@ -76,6 +80,7 @@ k-ecm-nfs-storage () {
 
 
 apply-CPK () {
+    kubectl exec nfs-server-0 -- mkdir /exports/pg-backrest
 	kubectl apply -k kustomize/install/namespace
 	kubectl apply --server-side -k kustomize/install/default/
 }
