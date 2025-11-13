@@ -110,6 +110,6 @@ do-over () {
 }
 
 
-export SHARED_VOLUME_NAME=$(kubectl get -n postgres-operator -o=jsonpath='{.items[*].spec.volumeName}' -l postgres-operator.crunchydata.com/data=shared,postgres-operator.crunchydata.com/cluster=ecm-db,postgres-operator.crunchydata.com/role=tablespace pvc)
+# export SHARED_VOLUME_NAME=$(kubectl get -n postgres-operator -o=jsonpath='{.items[*].spec.volumeName}' -l postgres-operator.crunchydata.com/data=shared,postgres-operator.crunchydata.com/cluster=ecm-db,postgres-operator.crunchydata.com/role=tablespace pvc)
 
 # kubectl label pv $SHARED_VOLUME_NAME shared-ecm-db=pv
